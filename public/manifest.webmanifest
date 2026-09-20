@@ -1,0 +1,10 @@
+{
+  "name": "webxdc explorer",
+  "short_name": "webxdc",
+  "description": "A dedicated Nostr client for webxdc apps (NIP-DC).",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": []
+}
