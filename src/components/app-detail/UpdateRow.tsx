@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Braces } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
 
@@ -10,8 +11,8 @@ import { parseWebxdcUpdate } from '@/lib/webxdc';
 
 interface UpdateRowProps {
   event: NostrEvent;
-  /** 1-based serial number in created_at order. */
-  serial: number;
+  /** 1-based serial number in created_at order; omitted outside the session log. */
+  serial?: number;
 }
 
 export function UpdateRow({ event, serial }: UpdateRowProps) {
@@ -24,7 +25,7 @@ export function UpdateRow({ event, serial }: UpdateRowProps) {
   return (
     <div className="flex gap-3 border-b py-3 last:border-b-0">
       <div className="w-10 shrink-0 pt-0.5 text-right font-mono text-xs text-muted-foreground">
-        #{serial}
+        {serial !== undefined && `#${serial}`}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5 text-sm">
@@ -35,6 +36,14 @@ export function UpdateRow({ event, serial }: UpdateRowProps) {
           {update?.info && <Badge variant="secondary">{update.info}</Badge>}
           {update?.summary && <Badge variant="outline">{update.summary}</Badge>}
           {update?.document && <Badge variant="outline">doc: {update.document}</Badge>}
+          {update && (
+            <Link
+              to={`/app/${encodeURIComponent(update.identifier)}`}
+              className="font-mono text-xs text-muted-foreground hover:underline"
+            >
+              i:{update.identifier.slice(0, 8)}
+            </Link>
+          )}
           <Button
             size="icon"
             variant="ghost"
