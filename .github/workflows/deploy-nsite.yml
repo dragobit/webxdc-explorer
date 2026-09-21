@@ -1,0 +1,62 @@
+name: Deploy to nsite
+
+on:
+  # Default deployment target: publishes dist/ as a NIP-5A "nsite" (Blossom blobs +
+  # a kind 15128 manifest) via scripts/deploy-nsite.mjs — live at
+  # https://<app-npub>.nsite.lol and other public gateways.
+  push:
+    branches: ["main"]
+
+  # Allows you to run this workflow manually from the Actions tab
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Allow only one concurrent deployment, skipping runs queued between the run in-progress and latest queued.
+# However, do NOT cancel in-progress runs as we want to allow these production deployments to complete.
+concurrency:
+  group: "nsite"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      # Repository secret holding the site's nsec1... (or hex) signing key; its npub
+      # is the site's address. The deploy step is skipped when it is not set.
+      NSITE_NSEC: ${{ secrets.NSITE_NSEC }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies and build
+        run: |
+          npm install
+          npm run build
+
+      - name: Deploy to nsite
+        if: env.NSITE_NSEC != ''
+        env:
+          NOSTR_PRIVATE_KEY: ${{ secrets.NSITE_NSEC }}
+          # Optional repository variables overriding the default publish relays and
+          # Blossom upload servers:
+          #   NSITE_RELAYS           e.g. wss://nos.lol,wss://relay.primal.net
+          #   NSITE_BLOSSOM_SERVERS  e.g. https://blossom.primal.net,https://blossom.band
+          NOSTR_RELAYS: ${{ vars.NSITE_RELAYS }}
+          BLOSSOM_SERVERS: ${{ vars.NSITE_BLOSSOM_SERVERS }}
+        run: node scripts/deploy-nsite.mjs
+
+      - name: nsite deploy skipped
+        if: env.NSITE_NSEC == ''
+        run: >-
+          echo "::notice title=nsite deploy skipped::The NSITE_NSEC repository
+          secret is not set. Generate a keypair (e.g. `npx nostr-tools` or any Nostr
+          client) and add the nsec under Settings → Secrets and variables → Actions
+          to enable nsite deploys."
