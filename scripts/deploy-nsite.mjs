@@ -46,7 +46,7 @@ function loadEnv() {
       `NOSTR_RELAYS=${env.NOSTR_RELAYS ?? 'wss://nostrue.com,wss://purplerelay.com,wss://relay.primal.net,wss://nos.lol'}`,
       '',
       '# Blossom File Storage',
-      `BLOSSOM_SERVERS=${env.BLOSSOM_SERVERS ?? 'https://blossom.primal.net,https://blossom.band,https://cdn.hzrd149.com'}`,
+      `BLOSSOM_SERVERS=${env.BLOSSOM_SERVERS ?? 'https://cdn.hzrd149.com,https://blossom.band,https://blossom.primal.net'}`,
       '',
     ].join('\n');
     writeFileSync(ENV_FILE, saved, { mode: 0o600 });
@@ -64,6 +64,28 @@ function* walk(dir) {
 }
 
 const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
+
+// Blossom blobs are content-addressed and many servers store/serve them
+// untyped (text/plain or octet-stream); browsers refuse a stylesheet served
+// as text/plain, so always send the real MIME type at upload time and prefer
+// servers that honor it.
+const MIME_TYPES = {
+  html: 'text/html', htm: 'text/html',
+  css: 'text/css',
+  js: 'text/javascript', mjs: 'text/javascript',
+  json: 'application/json', map: 'application/json',
+  webmanifest: 'application/manifest+json',
+  svg: 'image/svg+xml', png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+  gif: 'image/gif', webp: 'image/webp', avif: 'image/avif', ico: 'image/x-icon',
+  woff: 'font/woff', woff2: 'font/woff2', ttf: 'font/ttf',
+  txt: 'text/plain', md: 'text/plain', xml: 'application/xml',
+  wasm: 'application/wasm',
+};
+
+function contentTypeFor(filePath) {
+  const ext = filePath.split('.').pop().toLowerCase();
+  return MIME_TYPES[ext] ?? 'application/octet-stream';
+}
 
 async function blossomUpload(servers, skBytes, filePath, blob) {
   const hash = sha256(blob);
@@ -83,7 +105,7 @@ async function blossomUpload(servers, skBytes, filePath, blob) {
     try {
       const res = await fetch(`${server.replace(/\/$/, '')}/upload`, {
         method: 'PUT',
-        headers: { authorization: header, 'content-type': 'application/octet-stream' },
+        headers: { authorization: header, 'content-type': contentTypeFor(filePath) },
         body: blob,
       });
       if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -112,16 +134,18 @@ const env = loadEnv();
 const skBytes = secretKeyBytes(env.NOSTR_PRIVATE_KEY);
 const pubkey = getPublicKey(skBytes);
 const relays = (env.NOSTR_RELAYS ?? 'wss://nos.lol,wss://relay.primal.net').split(',');
-const blossoms = (env.BLOSSOM_SERVERS ?? 'https://blossom.primal.net').split(',');
+const blossoms = (env.BLOSSOM_SERVERS ?? 'https://cdn.hzrd149.com').split(',');
 
 const files = [...walk(DIST)].sort();
 console.log(`Deploying ${files.length} files from dist/`);
 
 const pathTags = [];
+const usedServers = new Set();
 for (const file of files) {
   const blob = readFileSync(file);
   const urlPath = '/' + relative(DIST, file).split('/').join('/');
   const { server, sha256: hash } = await blossomUpload(blossoms, skBytes, file, blob);
+  usedServers.add(server);
   pathTags.push(['path', urlPath, hash, server.replace(/\/$/, '') + '/' + hash]);
   console.log(`  ${urlPath} -> ${hash.slice(0, 12)}… (${server})`);
 }
@@ -138,7 +162,9 @@ const manifest = finalizeEvent({
     ...(process.env.GITHUB_REPOSITORY
       ? [['source', `https://github.com/${process.env.GITHUB_REPOSITORY}`]]
       : []),
-    ...blossoms.map((s) => ['server', s.replace(/\/$/, '')]),
+    // Advertise only the servers that actually hold the blobs, in upload order,
+    // so gateways try type-preserving servers first.
+    ...[...usedServers].map((s) => ['server', s.replace(/\/$/, '')]),
   ],
   content: '',
 }, skBytes);
