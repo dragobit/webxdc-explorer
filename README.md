@@ -15,4 +15,10 @@ npm run dev    # local dev server
 npm run test   # tsc + eslint + vitest + build (same as CI)
 ```
 
+## Deployment
+
+`npm run deploy` builds `dist/` and publishes it as a NIP-5A *nsite* via `scripts/deploy-nsite.mjs` (Blossom uploads + kind `15128` manifest), live at `https://<app-npub>.nsite.lol`.
+
+On CI, `.github/workflows/deploy-nsite.yml` does this on every push to `main` using the `NSITE_NSEC` repository secret (an `nsec1...` key whose npub is the site's address); `NSITE_RELAYS` / `NSITE_BLOSSOM_SERVERS` repository variables override the defaults. `.github/workflows/deploy.yml` (GitHub Pages) is disabled by default — set `DEPLOY_GH_PAGES=true` as a repository variable or run it manually to use it.
+
 See `AGENTS.md` for project conventions and `src/lib/webxdc.ts` for the shared NIP-DC parsing contract.

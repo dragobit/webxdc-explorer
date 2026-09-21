@@ -24,7 +24,15 @@ function loadEnv() {
       if (m) env[m[1]] = m[2].trim();
     }
   }
+  // Environment variables (e.g. CI secrets) take precedence over the local file.
+  for (const key of ['NOSTR_PRIVATE_KEY', 'NOSTR_PUBLIC_KEY', 'NOSTR_RELAYS', 'BLOSSOM_SERVERS']) {
+    if (process.env[key]) env[key] = process.env[key];
+  }
   if (!env.NOSTR_PRIVATE_KEY) {
+    if (process.env.CI) {
+      console.error('NOSTR_PRIVATE_KEY is not set; refusing to deploy with a throwaway keypair in CI.');
+      process.exit(1);
+    }
     const sk = generateSecretKey();
     env.NOSTR_PRIVATE_KEY = bytesToHex(sk);
     env.NOSTR_PUBLIC_KEY = getPublicKey(sk);
@@ -89,9 +97,20 @@ async function blossomUpload(servers, skBytes, filePath, blob) {
   throw lastErr;
 }
 
+function secretKeyBytes(secret) {
+  if (secret.startsWith('nsec1')) {
+    const { type, data } = nip19.decode(secret);
+    if (type !== 'nsec') throw new Error(`NOSTR_PRIVATE_KEY must be an nsec or hex key, got ${type}`);
+    return data;
+  }
+  return hexToBytes(secret);
+}
+
+const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+
 const env = loadEnv();
-const skBytes = hexToBytes(env.NOSTR_PRIVATE_KEY);
-const pubkey = env.NOSTR_PUBLIC_KEY ?? getPublicKey(skBytes);
+const skBytes = secretKeyBytes(env.NOSTR_PRIVATE_KEY);
+const pubkey = getPublicKey(skBytes);
 const relays = (env.NOSTR_RELAYS ?? 'wss://nos.lol,wss://relay.primal.net').split(',');
 const blossoms = (env.BLOSSOM_SERVERS ?? 'https://blossom.primal.net').split(',');
 
@@ -115,8 +134,10 @@ const manifest = finalizeEvent({
   tags: [
     ...pathTags,
     ['x', aggregate],
-    ['title', 'MKStack app'],
-    ['source', 'https://github.com/dragobit/mkstack-devin'],
+    ['title', pkg.name],
+    ...(process.env.GITHUB_REPOSITORY
+      ? [['source', `https://github.com/${process.env.GITHUB_REPOSITORY}`]]
+      : []),
     ...blossoms.map((s) => ['server', s.replace(/\/$/, '')]),
   ],
   content: '',
