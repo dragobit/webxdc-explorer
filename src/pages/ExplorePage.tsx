@@ -220,13 +220,13 @@ const ExplorePage = () => {
         </TabsContent>
 
         <TabsContent value="updates" className="mt-4">
-          {apps.isLoading || catalog.isLoading || stats.isLoading ? (
+          {catalog.isLoading || stats.isLoading ? (
             <div className="space-y-3">
               {[0, 1, 2].map((n) => (
                 <Skeleton key={n} className="h-16 w-full" />
               ))}
             </div>
-          ) : stats.isError || apps.isError ? (
+          ) : stats.isError || catalog.isError ? (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
                 Failed to load updates.
