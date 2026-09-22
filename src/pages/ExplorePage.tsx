@@ -94,6 +94,15 @@ const ExplorePage = () => {
     return filtered;
   }, [apps.data, stats.data, activeOnly, statsQuery, sort]);
 
+  // Total kind-4932 updates across all loaded apps (per-#i stats are lower
+  // bounds when an app exceeds the shared query limit).
+  const totalUpdates = useMemo(() => {
+    if (!stats.data) return undefined;
+    let n = 0;
+    for (const s of stats.data.values()) n += s.count;
+    return n;
+  }, [stats.data]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -120,7 +129,7 @@ const ExplorePage = () => {
               Apps{apps.data ? ` (${visibleApps.length})` : ''}
             </TabsTrigger>
             <TabsTrigger value="updates">
-              Updates{updates.data ? ` (${updates.data.length})` : ''}
+              Updates{totalUpdates !== undefined ? ` (${totalUpdates})` : updates.data ? ` (${updates.data.length})` : ''}
             </TabsTrigger>
           </TabsList>
           {tab === 'apps' && (
