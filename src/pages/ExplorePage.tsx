@@ -117,7 +117,7 @@ const ExplorePage = () => {
         <div className="flex items-center justify-between gap-4">
           <TabsList>
             <TabsTrigger value="apps">
-              Apps{apps.data ? ` (${apps.data.length})` : ''}
+              Apps{apps.data ? ` (${visibleApps.length})` : ''}
             </TabsTrigger>
             <TabsTrigger value="updates">
               Updates{updates.data ? ` (${updates.data.length})` : ''}
