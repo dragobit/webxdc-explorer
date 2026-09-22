@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useSeoMeta } from '@unhead/react';
 import { Search } from 'lucide-react';
@@ -7,13 +7,21 @@ import { AppCard } from '@/components/explore/AppCard';
 import { UpdateRow } from '@/components/app-detail/UpdateRow';
 import { ViewToggle, type ViewMode } from '@/components/webxdc/ViewToggle';
 import { Card, CardContent } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useWebxdcAppSearch } from '@/hooks/useWebxdcAppSearch';
 import { useWebxdcUpdateSearch } from '@/hooks/useWebxdcUpdateSearch';
+import { useWebxdcUpdateStats } from '@/hooks/useWebxdcUpdateStats';
+import { getWebxdcId } from '@/lib/webxdc';
+import { compareStat, parseStatsQuery } from '@/lib/webxdcQuery';
 import { cn } from '@/lib/utils';
+
+type AppSort = 'newest' | 'updates' | 'participants' | 'active';
 
 const ExplorePage = () => {
   useSeoMeta({
@@ -25,6 +33,8 @@ const ExplorePage = () => {
   const q = params.get('q') ?? '';
   const [input, setInput] = useState(q);
   const [view, setView] = useLocalStorage<ViewMode>('webxdc:explore-view', 'grid');
+  const [sort, setSort] = useLocalStorage<AppSort>('webxdc:explore-sort', 'newest');
+  const [activeOnly, setActiveOnly] = useLocalStorage<boolean>('webxdc:explore-active-only', false);
   const [tab, setTab] = useState<'apps' | 'updates'>('apps');
 
   useEffect(() => {
@@ -34,8 +44,55 @@ const ExplorePage = () => {
     return () => clearTimeout(t);
   }, [input, setParams]);
 
-  const apps = useWebxdcAppSearch(q);
-  const updates = useWebxdcUpdateSearch(q);
+  const statsQuery = useMemo(() => parseStatsQuery(q), [q]);
+  const searchQ = statsQuery ? '' : q;
+  const apps = useWebxdcAppSearch(searchQ);
+  const updates = useWebxdcUpdateSearch(searchQ);
+
+  const identifiers = useMemo(
+    () => (apps.data ?? []).map(getWebxdcId).filter((id): id is string => Boolean(id)),
+    [apps.data],
+  );
+  const stats = useWebxdcUpdateStats(identifiers);
+
+  const visibleApps = useMemo(() => {
+    const list = [...(apps.data ?? [])];
+    const map = stats.data;
+    const statOf = (e: (typeof list)[number]) => {
+      const id = getWebxdcId(e);
+      return id ? map?.get(id) : undefined;
+    };
+
+    let filtered = list;
+    // While stats are still loading, don't apply stat-based filters.
+    if (map) {
+      if (activeOnly) filtered = filtered.filter((e) => (statOf(e)?.count ?? 0) > 0);
+      if (statsQuery) {
+        filtered = filtered.filter((e) => {
+          const s = statOf(e);
+          const actual = statsQuery.field === 'updates' ? s?.count ?? 0 : s?.participants ?? 0;
+          return compareStat(actual, statsQuery.op, statsQuery.value);
+        });
+      }
+    }
+
+    const newest = (a: (typeof list)[number], b: (typeof list)[number]) => b.created_at - a.created_at;
+    filtered.sort((a, b) => {
+      const sa = statOf(a);
+      const sb = statOf(b);
+      switch (sort) {
+        case 'updates':
+          return (sb?.count ?? 0) - (sa?.count ?? 0) || newest(a, b);
+        case 'participants':
+          return (sb?.participants ?? 0) - (sa?.participants ?? 0) || (sb?.count ?? 0) - (sa?.count ?? 0) || newest(a, b);
+        case 'active':
+          return (sb?.lastUpdate ?? 0) - (sa?.lastUpdate ?? 0) || newest(a, b);
+        default:
+          return newest(a, b);
+      }
+    });
+    return filtered;
+  }, [apps.data, stats.data, activeOnly, statsQuery, sort]);
 
   return (
     <div className="space-y-6">
@@ -51,7 +108,7 @@ const ExplorePage = () => {
         <Input
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Search apps and updates — name, payload, webxdc id…"
+          placeholder="Search apps and updates — name, payload, webxdc id, updates>5…"
           className="pl-9"
         />
       </div>
@@ -66,7 +123,32 @@ const ExplorePage = () => {
               Updates{updates.data ? ` (${updates.data.length})` : ''}
             </TabsTrigger>
           </TabsList>
-          {tab === 'apps' && <ViewToggle value={view} onChange={setView} />}
+          {tab === 'apps' && (
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-1.5">
+                <Checkbox
+                  id="active-only"
+                  checked={activeOnly}
+                  onCheckedChange={(v) => setActiveOnly(v === true)}
+                />
+                <Label htmlFor="active-only" className="text-xs font-normal whitespace-nowrap">
+                  Only with updates
+                </Label>
+              </div>
+              <Select value={sort} onValueChange={(v) => setSort(v as AppSort)}>
+                <SelectTrigger size="sm" className="w-auto text-xs" aria-label="Sort apps">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="newest">Newest</SelectItem>
+                  <SelectItem value="updates">Most updates</SelectItem>
+                  <SelectItem value="participants">Most participants</SelectItem>
+                  <SelectItem value="active">Recently active</SelectItem>
+                </SelectContent>
+              </Select>
+              <ViewToggle value={view} onChange={setView} />
+            </div>
+          )}
         </div>
 
         <TabsContent value="apps" className="mt-4">
@@ -82,26 +164,34 @@ const ExplorePage = () => {
                 Failed to load apps.
               </CardContent>
             </Card>
-          ) : apps.data?.length ? (
+          ) : visibleApps.length ? (
             view === 'grid' ? (
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                {apps.data.map((e) => (
-                  <AppCard key={e.id} event={e} mode="grid" />
-                ))}
+                {visibleApps.map((e) => {
+                  const id = getWebxdcId(e);
+                  return <AppCard key={e.id} event={e} mode="grid" stats={id ? stats.data?.get(id) : undefined} />;
+                })}
               </div>
             ) : (
               <Card>
                 <CardContent className="px-4 py-0">
-                  {apps.data.map((e) => (
-                    <AppCard key={e.id} event={e} mode="list" />
-                  ))}
+                  {visibleApps.map((e) => {
+                    const id = getWebxdcId(e);
+                    return <AppCard key={e.id} event={e} mode="list" stats={id ? stats.data?.get(id) : undefined} />;
+                  })}
                 </CardContent>
               </Card>
             )
           ) : (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                {q ? `No webxdc apps match "${q}".` : 'No webxdc apps found on your relays.'}
+                {statsQuery
+                  ? `No loaded apps match "${q}" — stat filters apply to the apps loaded above (${apps.data?.length ?? 0}).`
+                  : q
+                    ? `No webxdc apps match "${q}".`
+                    : activeOnly && apps.data?.length
+                      ? 'No webxdc apps with updates yet.'
+                      : 'No webxdc apps found on your relays.'}
               </CardContent>
             </Card>
           )}

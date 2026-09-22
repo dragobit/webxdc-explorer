@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Blocks, Braces } from 'lucide-react';
+import { Activity, Blocks, Braces, Users } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
 
 import { EventJsonDialog } from '@/components/webxdc/EventJsonDialog';
@@ -8,12 +8,67 @@ import type { ViewMode } from '@/components/webxdc/ViewToggle';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import { Skeleton } from '@/components/ui/skeleton';
 import { useAuthor } from '@/hooks/useAuthor';
+import { useWebxdcIcon } from '@/hooks/useWebxdcIcon';
+import type { WebxdcUpdateStats } from '@/hooks/useWebxdcUpdateStats';
 import { getWebxdcId, getWebxdcName, getWebxdcUrl } from '@/lib/webxdc';
+import { cn } from '@/lib/utils';
 
 interface AppCardProps {
   event: NostrEvent;
   mode: ViewMode;
+  stats?: WebxdcUpdateStats;
+}
+
+/** App icon: NIP-92 preview image or the .xdc's bundled icon, else a Blocks glyph. */
+function AppIcon({ event, className, iconClassName }: { event: NostrEvent; className: string; iconClassName: string }) {
+  // Only fetch/extract the icon once the card nears the viewport.
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
+  const [failed, setFailed] = useState(false);
+  const icon = useWebxdcIcon(event, { enabled: visible });
+
+  useEffect(() => {
+    if (visible || !ref.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  if (!visible) {
+    return (
+      <div ref={ref} className={cn('flex shrink-0 items-center justify-center rounded-lg bg-primary/10', className)}>
+        <Blocks className={cn('text-primary', iconClassName)} />
+      </div>
+    );
+  }
+  if (icon.isLoading) {
+    return <Skeleton className={cn('shrink-0 rounded-lg', className)} />;
+  }
+  if (icon.data && !failed) {
+    return (
+      <img
+        src={icon.data}
+        alt=""
+        onError={() => setFailed(true)}
+        className={cn('shrink-0 rounded-lg object-cover', className)}
+      />
+    );
+  }
+  return (
+    <div className={cn('flex shrink-0 items-center justify-center rounded-lg bg-primary/10', className)}>
+      <Blocks className={cn('text-primary', iconClassName)} />
+    </div>
+  );
 }
 
 function hostOf(url: string | undefined): string | undefined {
@@ -25,7 +80,7 @@ function hostOf(url: string | undefined): string | undefined {
   }
 }
 
-export function AppCard({ event, mode }: AppCardProps) {
+export function AppCard({ event, mode, stats }: AppCardProps) {
   const [jsonOpen, setJsonOpen] = useState(false);
   const author = useAuthor(event.pubkey);
 
@@ -44,6 +99,18 @@ export function AppCard({ event, mode }: AppCardProps) {
         <span>{new Date(event.created_at * 1000).toLocaleDateString()}</span>
         <Badge variant="outline">kind {event.kind}</Badge>
         {host && <span>{host}</span>}
+        {stats && (
+          <>
+            <span className="inline-flex items-center gap-0.5">
+              <Activity className="size-3" />
+              {stats.count} update{stats.count === 1 ? '' : 's'}
+            </span>
+            <span className="inline-flex items-center gap-0.5">
+              <Users className="size-3" />
+              {stats.participants}
+            </span>
+          </>
+        )}
         {!identifier && <Badge variant="secondary">no state id</Badge>}
       </div>
       {snippet && <div className="line-clamp-2 text-xs text-muted-foreground">{snippet}</div>}
@@ -79,9 +146,7 @@ export function AppCard({ event, mode }: AppCardProps) {
         <Card className="transition-shadow hover:shadow-md">
           <CardContent className="flex flex-col gap-3 p-4">
             <div className="flex items-start justify-between gap-2">
-              <div className="flex size-10 items-center justify-center rounded-lg bg-primary/10">
-                <Blocks className="size-5 text-primary" />
-              </div>
+              <AppIcon event={event} className="size-14" iconClassName="size-6" />
               {jsonButton}
             </div>
             {body}
@@ -89,9 +154,7 @@ export function AppCard({ event, mode }: AppCardProps) {
         </Card>
       ) : (
         <div className="flex items-center gap-3 border-b py-3 last:border-b-0">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-            <Blocks className="size-4 text-primary" />
-          </div>
+          <AppIcon event={event} className="size-9" iconClassName="size-4" />
           <div className="min-w-0 flex-1">{body}</div>
           {jsonButton}
         </div>

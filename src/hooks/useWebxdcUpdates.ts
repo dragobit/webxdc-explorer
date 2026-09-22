@@ -13,7 +13,7 @@ export function useWebxdcUpdates(identifier: string | undefined) {
     enabled: Boolean(identifier),
     queryFn: async ({ signal }) => {
       const events = await nostr.query(
-        [{ kinds: [WEBXDC_UPDATE_KIND], '#i': [identifier ?? ''], limit: 500 }],
+        [{ kinds: [WEBXDC_UPDATE_KIND], '#i': [identifier ?? ''], limit: 1000 }],
         { signal },
       );
       return sortWebxdcUpdates(events.filter((e) => parseWebxdcUpdate(e)));
