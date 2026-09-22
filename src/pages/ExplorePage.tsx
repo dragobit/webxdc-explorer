@@ -23,6 +23,8 @@ import { cn } from '@/lib/utils';
 
 type AppSort = 'newest' | 'updates' | 'participants' | 'active';
 
+const UPDATE_PAGE = 200;
+
 const ExplorePage = () => {
   useSeoMeta({
     title: 'Explore · webxdc explorer',
@@ -47,11 +49,17 @@ const ExplorePage = () => {
   const statsQuery = useMemo(() => parseStatsQuery(q), [q]);
   const searchQ = statsQuery ? '' : q;
   const apps = useWebxdcAppSearch(searchQ);
-  const [updateRows, setUpdateRows] = useState(200);
+  // Stats always cover the unfiltered catalog so update-payload searches
+  // aren't limited to apps whose metadata also matched `q`.
+  const catalog = useWebxdcAppSearch('');
+  // Row cap resets implicitly whenever the update filter changes.
+  const [paging, setPaging] = useState({ q: searchQ, rows: UPDATE_PAGE });
+  const updateRows = paging.q === searchQ ? paging.rows : UPDATE_PAGE;
+  const showMoreUpdates = () => setPaging({ q: searchQ, rows: updateRows + UPDATE_PAGE });
 
   const identifiers = useMemo(
-    () => (apps.data ?? []).map(getWebxdcId).filter((id): id is string => Boolean(id)),
-    [apps.data],
+    () => (catalog.data ?? []).map(getWebxdcId).filter((id): id is string => Boolean(id)),
+    [catalog.data],
   );
   const stats = useWebxdcUpdateStats(identifiers);
 
@@ -103,7 +111,7 @@ const ExplorePage = () => {
     if (!needle) return events;
     return events.filter((e) => {
       const update = parseWebxdcUpdate(e);
-      const hay = `${e.content} ${update?.identifier ?? ''}`.toLowerCase();
+      const hay = `${e.content} ${update?.identifier ?? ''} ${update?.info ?? ''} ${update?.document ?? ''} ${update?.summary ?? ''}`.toLowerCase();
       return hay.includes(needle);
     });
   }, [stats.data, searchQ]);
@@ -212,13 +220,13 @@ const ExplorePage = () => {
         </TabsContent>
 
         <TabsContent value="updates" className="mt-4">
-          {stats.isLoading ? (
+          {apps.isLoading || catalog.isLoading || stats.isLoading ? (
             <div className="space-y-3">
               {[0, 1, 2].map((n) => (
                 <Skeleton key={n} className="h-16 w-full" />
               ))}
             </div>
-          ) : stats.isError ? (
+          ) : stats.isError || apps.isError ? (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
                 Failed to load updates.
@@ -235,7 +243,7 @@ const ExplorePage = () => {
               </Card>
               {visibleUpdates.length > updateRows && (
                 <div className="mt-3 text-center">
-                  <Button variant="outline" size="sm" onClick={() => setUpdateRows((n) => n + 200)}>
+                  <Button variant="outline" size="sm" onClick={showMoreUpdates}>
                     Show more ({visibleUpdates.length - updateRows} remaining)
                   </Button>
                 </div>
