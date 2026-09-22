@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, Blocks, Braces, Users } from 'lucide-react';
 import type { NostrEvent } from '@nostrify/nostrify';
@@ -23,9 +23,34 @@ interface AppCardProps {
 
 /** App icon: NIP-92 preview image or the .xdc's bundled icon, else a Blocks glyph. */
 function AppIcon({ event, className, iconClassName }: { event: NostrEvent; className: string; iconClassName: string }) {
-  const icon = useWebxdcIcon(event);
+  // Only fetch/extract the icon once the card nears the viewport.
+  const ref = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
   const [failed, setFailed] = useState(false);
+  const icon = useWebxdcIcon(event, { enabled: visible });
 
+  useEffect(() => {
+    if (visible || !ref.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) {
+          setVisible(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, [visible]);
+
+  if (!visible) {
+    return (
+      <div ref={ref} className={cn('flex shrink-0 items-center justify-center rounded-lg bg-primary/10', className)}>
+        <Blocks className={cn('text-primary', iconClassName)} />
+      </div>
+    );
+  }
   if (icon.isLoading) {
     return <Skeleton className={cn('shrink-0 rounded-lg', className)} />;
   }

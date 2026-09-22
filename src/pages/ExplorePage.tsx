@@ -185,11 +185,13 @@ const ExplorePage = () => {
           ) : (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                {q
-                  ? `No webxdc apps match "${q}".`
-                  : activeOnly && apps.data?.length
-                    ? 'No webxdc apps with updates yet.'
-                    : 'No webxdc apps found on your relays.'}
+                {statsQuery
+                  ? `No loaded apps match "${q}" — stat filters apply to the apps loaded above (${apps.data?.length ?? 0}).`
+                  : q
+                    ? `No webxdc apps match "${q}".`
+                    : activeOnly && apps.data?.length
+                      ? 'No webxdc apps with updates yet.'
+                      : 'No webxdc apps found on your relays.'}
               </CardContent>
             </Card>
           )}

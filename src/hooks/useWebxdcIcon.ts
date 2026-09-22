@@ -10,10 +10,13 @@ import { getWebxdcUrl } from '@/lib/webxdc';
  * Extracted icons are object URLs; they intentionally live as long as the
  * query cache entry rather than being revoked.
  */
-export function useWebxdcIcon(event: NostrEvent | undefined) {
+export function useWebxdcIcon(
+  event: NostrEvent | undefined,
+  options?: { enabled?: boolean },
+) {
   return useQuery<string | null>({
     queryKey: ['webxdc-icon', event?.id],
-    enabled: Boolean(event),
+    enabled: Boolean(event) && (options?.enabled ?? true),
     staleTime: Infinity,
     gcTime: 30 * 60 * 1000,
     retry: false,

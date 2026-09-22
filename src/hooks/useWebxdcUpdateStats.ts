@@ -33,6 +33,8 @@ export function useWebxdcUpdateStats(
       const results = await Promise.all(
         chunks.map((chunk) =>
           nostr.query(
+            // limit is shared across the chunk's identifiers, so counts for
+            // very chatty apps are a lower bound.
             [{ kinds: [WEBXDC_UPDATE_KIND], '#i': chunk, limit: 1000 }],
             { signal },
           ),

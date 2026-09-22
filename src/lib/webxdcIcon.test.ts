@@ -2,7 +2,7 @@ import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it, vi, beforeAll } from 'vitest';
 import type { NostrEvent } from '@nostrify/nostrify';
 
-import { extractWebxdcIcon, getWebxdcPreviewImage } from '@/lib/webxdcIcon';
+import { extractWebxdcIcon, getWebxdcPreviewImage, MAX_XDC_BYTES } from '@/lib/webxdcIcon';
 
 beforeAll(async () => {
   // jsdom may not expose DecompressionStream — polyfill from node's web streams
@@ -77,13 +77,63 @@ function buildZip(entries: ZipEntry[]): Uint8Array {
   return concat([...localParts, cd, eocd]);
 }
 
-function stubFetchZip(zip: Uint8Array) {
-  const body = zip.slice().buffer as ArrayBuffer;
-  vi.stubGlobal('fetch', vi.fn(async () => ({
-    ok: true,
-    headers: { get: (k: string) => (k === 'content-length' ? String(body.byteLength) : null) },
-    arrayBuffer: async () => body,
-  })));
+interface FetchStubOptions {
+  /** honor Range headers with 206 + Content-Range (default: ignore Range, return 200) */
+  ranges?: boolean;
+  /** omit Content-Range on 206 responses (simulates CORS-hidden header) */
+  hideContentRange?: boolean;
+  /** record the Range header of each request into this array ('full' when absent) */
+  record?: string[];
+  /** override the body returned for full (non-range) fetches */
+  fullBody?: ArrayBuffer;
+  /** omit the content-length header */
+  noContentLength?: boolean;
+}
+
+function stubFetchZip(zip: Uint8Array, opts: FetchStubOptions = {}) {
+  const body = (opts.fullBody ?? zip.slice().buffer) as ArrayBuffer;
+  const makeHeaders = (extra: Record<string, string> = {}) => ({
+    get: (k: string) =>
+      extra[k.toLowerCase()] ??
+      (k === 'content-length' && !opts.noContentLength ? String(body.byteLength) : null),
+  });
+  vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { headers?: { Range?: string } }) => {
+    const range = init?.headers?.Range;
+    opts.record?.push(range ?? 'full');
+    if (!range || !opts.ranges) {
+      return {
+        ok: true,
+        status: 200,
+        headers: makeHeaders(),
+        arrayBuffer: async () => body,
+      };
+    }
+    // Parse `bytes=-N` (suffix) or `bytes=a-b`.
+    let start: number;
+    let end: number;
+    const suffix = range.match(/^bytes=-(\d+)$/);
+    const explicit = range.match(/^bytes=(\d+)-(\d+)$/);
+    if (suffix) {
+      start = Math.max(0, body.byteLength - Number(suffix[1]));
+      end = body.byteLength - 1;
+    } else if (explicit) {
+      start = Number(explicit[1]);
+      end = Math.min(Number(explicit[2]), body.byteLength - 1);
+    } else {
+      throw new Error(`bad range ${range}`);
+    }
+    const slice = body.slice(start, end + 1);
+    const extra: Record<string, string> = {};
+    if (!opts.hideContentRange) {
+      extra['content-range'] = `bytes ${start}-${end}/${body.byteLength}`;
+    }
+    return {
+      ok: true,
+      status: 206,
+      headers: makeHeaders(extra),
+      arrayBuffer: async () => slice,
+    };
+  }));
 }
 
 function eventWithTags(tags: string[][]): NostrEvent {
@@ -126,6 +176,52 @@ describe('extractWebxdcIcon', () => {
       { name: 'index.html', data: new Uint8Array([1, 2, 3]), method: 0 },
     ]));
     expect(await extractWebxdcIcon('https://x.test/app.xdc')).toBeUndefined();
+  });
+
+  it('uses range requests on capable servers and never fetches the whole file', async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9, 9]);
+    // Several entries so the central directory isn't trivially tiny.
+    const record: string[] = [];
+    stubFetchZip(buildZip([
+      { name: 'index.html', data: new Uint8Array([1, 2, 3]), method: 0 },
+      { name: 'manifest.toml', data: new Uint8Array([4, 5]), method: 0 },
+      { name: 'icon.png', data: png, method: 8 },
+    ]), { ranges: true, record });
+    const blob = await extractWebxdcIcon('https://x.test/app.xdc');
+    expect(blob?.type).toBe('image/png');
+    expect(blob?.size).toBe(png.length);
+    expect(record.length).toBeGreaterThan(0);
+    expect(record.every((r) => r.startsWith('bytes='))).toBe(true);
+    expect(record[0]).toMatch(/^bytes=-\d+$/);
+  });
+
+  it('works when the server ignores Range (returns 200 full body)', async () => {
+    const png = new Uint8Array([0x89, 0x50, 1]);
+    stubFetchZip(buildZip([{ name: 'icon.png', data: png, method: 0 }]));
+    const blob = await extractWebxdcIcon('https://x.test/app.xdc');
+    expect(blob?.type).toBe('image/png');
+    expect(blob?.size).toBe(png.length);
+  });
+
+  it('falls back to a full fetch when Content-Range is not exposed', async () => {
+    const png = new Uint8Array([0x89, 0x50, 2]);
+    const record: string[] = [];
+    stubFetchZip(buildZip([{ name: 'icon.png', data: png, method: 0 }]), {
+      ranges: true,
+      hideContentRange: true,
+      record,
+    });
+    const blob = await extractWebxdcIcon('https://x.test/app.xdc');
+    expect(blob?.type).toBe('image/png');
+    expect(record).toContain('full'); // plain full fetch happened
+  });
+
+  it('returns undefined when the full body exceeds the size cap', async () => {
+    stubFetchZip(new Uint8Array([1]), {
+      fullBody: new ArrayBuffer(MAX_XDC_BYTES + 1),
+      noContentLength: true, // exercise the byteLength check, not the header check
+    });
+    expect(await extractWebxdcIcon('https://x.test/big.xdc')).toBeUndefined();
   });
 });
 
