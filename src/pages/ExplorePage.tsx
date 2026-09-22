@@ -44,7 +44,7 @@ const ExplorePage = () => {
     return () => clearTimeout(t);
   }, [input, setParams]);
 
-  const statsQuery = parseStatsQuery(q);
+  const statsQuery = useMemo(() => parseStatsQuery(q), [q]);
   const searchQ = statsQuery ? '' : q;
   const apps = useWebxdcAppSearch(searchQ);
   const updates = useWebxdcUpdateSearch(searchQ);
@@ -185,7 +185,11 @@ const ExplorePage = () => {
           ) : (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                {q ? `No webxdc apps match "${q}".` : 'No webxdc apps found on your relays.'}
+                {q
+                  ? `No webxdc apps match "${q}".`
+                  : activeOnly && apps.data?.length
+                    ? 'No webxdc apps with updates yet.'
+                    : 'No webxdc apps found on your relays.'}
               </CardContent>
             </Card>
           )}

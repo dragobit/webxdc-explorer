@@ -85,7 +85,6 @@ export async function extractWebxdcIcon(
       }
       cdOffset += 46 + nameLen + extraLen + commentLen;
     }
-    found.sort((a, b) => (a.name === 'icon.png' ? -1 : 0) - (b.name === 'icon.png' ? -1 : 0));
     const entry = found.find((f) => f.name === 'icon.png') ?? found[0];
     if (!entry) return undefined;
     if (entry.offset + 30 > bytes.length || dv.getUint32(entry.offset, true) !== LFH_SIG) {
