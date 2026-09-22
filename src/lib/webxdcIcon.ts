@@ -199,19 +199,17 @@ export async function extractWebxdcIcon(
               }
             }
             if (ok) {
+              // The central directory was read successfully: a missing icon is
+              // definitive, so don't fall back to downloading the whole file.
               const entry = findIconEntry(cdBytes, cdBase, cdOffset, entryCount);
-              if (entry) {
-                const want = 30 + entry.cdNameLen + entry.cdExtraLen + entry.size + 1024;
-                const local = await fetchRange(
-                  xdcUrl,
-                  `bytes=${entry.offset}-${entry.offset + want - 1}`,
-                  signal,
-                );
-                if (local) {
-                  const blob = await iconBlobFromLocal(local, entry.offset, entry);
-                  if (blob) return blob;
-                }
-              }
+              if (!entry) return undefined;
+              const want = 30 + entry.cdNameLen + entry.cdExtraLen + entry.size + 1024;
+              const local = await fetchRange(
+                xdcUrl,
+                `bytes=${entry.offset}-${entry.offset + want - 1}`,
+                signal,
+              );
+              if (local) return await iconBlobFromLocal(local, entry.offset, entry);
             }
           }
         }
