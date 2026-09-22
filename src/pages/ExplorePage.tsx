@@ -6,6 +6,7 @@ import { Search } from 'lucide-react';
 import { AppCard } from '@/components/explore/AppCard';
 import { UpdateRow } from '@/components/app-detail/UpdateRow';
 import { ViewToggle, type ViewMode } from '@/components/webxdc/ViewToggle';
+import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Input } from '@/components/ui/input';
@@ -15,13 +16,14 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useLocalStorage } from '@/hooks/useLocalStorage';
 import { useWebxdcAppSearch } from '@/hooks/useWebxdcAppSearch';
-import { useWebxdcUpdateSearch } from '@/hooks/useWebxdcUpdateSearch';
 import { useWebxdcUpdateStats } from '@/hooks/useWebxdcUpdateStats';
-import { getWebxdcId } from '@/lib/webxdc';
+import { getWebxdcId, parseWebxdcUpdate } from '@/lib/webxdc';
 import { compareStat, parseStatsQuery } from '@/lib/webxdcQuery';
 import { cn } from '@/lib/utils';
 
 type AppSort = 'newest' | 'updates' | 'participants' | 'active';
+
+const UPDATE_PAGE = 200;
 
 const ExplorePage = () => {
   useSeoMeta({
@@ -47,17 +49,23 @@ const ExplorePage = () => {
   const statsQuery = useMemo(() => parseStatsQuery(q), [q]);
   const searchQ = statsQuery ? '' : q;
   const apps = useWebxdcAppSearch(searchQ);
-  const updates = useWebxdcUpdateSearch(searchQ);
+  // Stats always cover the unfiltered catalog so update-payload searches
+  // aren't limited to apps whose metadata also matched `q`.
+  const catalog = useWebxdcAppSearch('');
+  // Row cap resets implicitly whenever the update filter changes.
+  const [paging, setPaging] = useState({ q: searchQ, rows: UPDATE_PAGE });
+  const updateRows = paging.q === searchQ ? paging.rows : UPDATE_PAGE;
+  const showMoreUpdates = () => setPaging({ q: searchQ, rows: updateRows + UPDATE_PAGE });
 
   const identifiers = useMemo(
-    () => (apps.data ?? []).map(getWebxdcId).filter((id): id is string => Boolean(id)),
-    [apps.data],
+    () => (catalog.data ?? []).map(getWebxdcId).filter((id): id is string => Boolean(id)),
+    [catalog.data],
   );
   const stats = useWebxdcUpdateStats(identifiers);
 
   const visibleApps = useMemo(() => {
     const list = [...(apps.data ?? [])];
-    const map = stats.data;
+    const map = stats.data?.stats;
     const statOf = (e: (typeof list)[number]) => {
       const id = getWebxdcId(e);
       return id ? map?.get(id) : undefined;
@@ -94,6 +102,20 @@ const ExplorePage = () => {
     return filtered;
   }, [apps.data, stats.data, activeOnly, statsQuery, sort]);
 
+  // The Updates tab lists the same events the per-app stats were computed
+  // from, so the badge count always equals the number of rows available.
+  const visibleUpdates = useMemo(() => {
+    const events = stats.data?.events;
+    if (!events) return undefined;
+    const needle = searchQ.trim().toLowerCase();
+    if (!needle) return events;
+    return events.filter((e) => {
+      const update = parseWebxdcUpdate(e);
+      const hay = `${e.content} ${update?.identifier ?? ''} ${update?.info ?? ''} ${update?.document ?? ''} ${update?.summary ?? ''}`.toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [stats.data, searchQ]);
+
   return (
     <div className="space-y-6">
       <div>
@@ -120,7 +142,7 @@ const ExplorePage = () => {
               Apps{apps.data ? ` (${visibleApps.length})` : ''}
             </TabsTrigger>
             <TabsTrigger value="updates">
-              Updates{updates.data ? ` (${updates.data.length})` : ''}
+              Updates{visibleUpdates ? ` (${visibleUpdates.length})` : ''}
             </TabsTrigger>
           </TabsList>
           {tab === 'apps' && (
@@ -169,7 +191,7 @@ const ExplorePage = () => {
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
                 {visibleApps.map((e) => {
                   const id = getWebxdcId(e);
-                  return <AppCard key={e.id} event={e} mode="grid" stats={id ? stats.data?.get(id) : undefined} />;
+                  return <AppCard key={e.id} event={e} mode="grid" stats={id ? stats.data?.stats.get(id) : undefined} />;
                 })}
               </div>
             ) : (
@@ -177,7 +199,7 @@ const ExplorePage = () => {
                 <CardContent className="px-4 py-0">
                   {visibleApps.map((e) => {
                     const id = getWebxdcId(e);
-                    return <AppCard key={e.id} event={e} mode="list" stats={id ? stats.data?.get(id) : undefined} />;
+                    return <AppCard key={e.id} event={e} mode="list" stats={id ? stats.data?.stats.get(id) : undefined} />;
                   })}
                 </CardContent>
               </Card>
@@ -198,30 +220,39 @@ const ExplorePage = () => {
         </TabsContent>
 
         <TabsContent value="updates" className="mt-4">
-          {updates.isLoading ? (
+          {catalog.isLoading || stats.isLoading ? (
             <div className="space-y-3">
               {[0, 1, 2].map((n) => (
                 <Skeleton key={n} className="h-16 w-full" />
               ))}
             </div>
-          ) : updates.isError ? (
+          ) : stats.isError || catalog.isError ? (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
                 Failed to load updates.
               </CardContent>
             </Card>
-          ) : updates.data?.length ? (
-            <Card>
-              <CardContent className="px-4 py-0">
-                {updates.data.map((e) => (
-                  <UpdateRow key={e.id} event={e} />
-                ))}
-              </CardContent>
-            </Card>
+          ) : visibleUpdates?.length ? (
+            <>
+              <Card>
+                <CardContent className="px-4 py-0">
+                  {visibleUpdates.slice(0, updateRows).map((e) => (
+                    <UpdateRow key={e.id} event={e} />
+                  ))}
+                </CardContent>
+              </Card>
+              {visibleUpdates.length > updateRows && (
+                <div className="mt-3 text-center">
+                  <Button variant="outline" size="sm" onClick={showMoreUpdates}>
+                    Show more ({visibleUpdates.length - updateRows} remaining)
+                  </Button>
+                </div>
+              )}
+            </>
           ) : (
             <Card className="border-dashed">
               <CardContent className="py-12 text-center text-sm text-muted-foreground">
-                {q ? `No updates match "${q}".` : 'No webxdc updates found on your relays.'}
+                {searchQ ? `No updates match "${q}".` : 'No webxdc updates found on your relays.'}
               </CardContent>
             </Card>
           )}
