@@ -1,6 +1,6 @@
 # Design: `sendToChat` / `importFiles` for the webxdc runtime
 
-Status: **design only — not implemented**. Follow-up to PR #12 (webxdc runtime).
+Status: **implemented** on this branch (previously design-only). Follow-up to PR #12 (webxdc runtime).
 Budget for the implementation session: ~5 ACU.
 
 ## Context

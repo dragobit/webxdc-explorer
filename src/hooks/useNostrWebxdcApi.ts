@@ -23,9 +23,23 @@ import {
 
 type UpdateListener = (update: ReceivedStatusUpdate<unknown>) => void;
 
+export type SendOptions = Parameters<WebxdcAPI<unknown>['sendToChat']>[0];
+export type ImportFilesFilter = Parameters<WebxdcAPI<unknown>['importFiles']>[0];
+
+export type SendToChatHandler = (message: SendOptions) => Promise<void>;
+export type ImportFilesHandler = (filter: ImportFilesFilter) => Promise<File[]>;
+
 interface UpdateEntry {
   id: string;
   update: ReceivedStatusUpdate<unknown>;
+}
+
+export interface NostrWebxdcApi {
+  api: WebxdcAPI<unknown>;
+  /** Register the UI handler that mediates `webxdc.sendToChat`. */
+  setSendToChatHandler: (fn: SendToChatHandler | null) => void;
+  /** Register the UI handler that mediates `webxdc.importFiles`. */
+  setImportFilesHandler: (fn: ImportFilesHandler | null) => void;
 }
 
 /**
@@ -33,7 +47,7 @@ interface UpdateEntry {
  * identifier: kind 4932 events are the durable state plane, kind 20932
  * ephemeral events are the realtime plane. Both are public.
  */
-export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
+export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
   const { nostr } = useNostr();
   const queryClient = useQueryClient();
   const { user, metadata } = useCurrentUser();
@@ -189,12 +203,36 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
     };
   }, [identifier, publish]);
 
-  const sendToChat = useCallback(async (): Promise<void> => {
-    throw new Error('sendToChat is not supported');
-  }, []);
-  const importFiles = useCallback(async (): Promise<File[]> => [], []);
+  // sendToChat / importFiles are user-mediated: the runner registers UI
+  // handlers that show a confirmation dialog / file prompt. The hook stays
+  // UI-free and only forwards to the registered handler.
+  const sendToChatHandler = useRef<SendToChatHandler | null>(null);
+  const importFilesHandler = useRef<ImportFilesHandler | null>(null);
 
-  return useMemo<WebxdcAPI<unknown>>(
+  const sendToChat = useCallback(
+    (message: SendOptions): Promise<void> => {
+      if (!user) return Promise.reject(new Error('Log in to share from this app'));
+      const handler = sendToChatHandler.current;
+      if (!handler) return Promise.reject(new Error('sendToChat is not available'));
+      return handler(message);
+    },
+    [user],
+  );
+
+  const importFiles = useCallback((filter: ImportFilesFilter): Promise<File[]> => {
+    const handler = importFilesHandler.current;
+    if (!handler) return Promise.resolve([]);
+    return handler(filter);
+  }, []);
+
+  const setSendToChatHandler = useCallback((fn: SendToChatHandler | null) => {
+    sendToChatHandler.current = fn;
+  }, []);
+  const setImportFilesHandler = useCallback((fn: ImportFilesHandler | null) => {
+    importFilesHandler.current = fn;
+  }, []);
+
+  const api = useMemo<WebxdcAPI<unknown>>(
     () => ({
       selfAddr,
       selfName,
@@ -209,4 +247,6 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
     }),
     [selfAddr, selfName, sendUpdate, setUpdateListener, getAllUpdates, sendToChat, importFiles, joinRealtimeChannel],
   );
+
+  return { api, setSendToChatHandler, setImportFilesHandler };
 }
