@@ -346,7 +346,9 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
     if (!fileMap) {
       return { status: 503, contentType: 'text/plain', body: new TextEncoder().encode('Archive not loaded') };
     }
-    const filePath = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
+    const filePath = pathname.endsWith('/')
+      ? decodeURIComponent(pathname.slice(1)) + 'index.html'
+      : decodeURIComponent(pathname.slice(1));
     const fileBytes = fileMap.get(filePath);
     if (!fileBytes) return null;
 
