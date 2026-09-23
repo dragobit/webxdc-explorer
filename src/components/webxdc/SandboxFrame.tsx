@@ -5,7 +5,7 @@ import { bytesToBase64, utf8ToBase64 } from '@/lib/sandbox';
 import type { FileResponse, SerialisedRequest } from '@/lib/sandbox';
 
 export interface SandboxFrameProps
-  extends Omit<IframeHTMLAttributes<HTMLIFrameElement>, 'src' | 'id' | 'sandbox'> {
+  extends Omit<IframeHTMLAttributes<HTMLIFrameElement>, 'src' | 'id' | 'sandbox' | 'allow'> {
   /** HMAC-derived subdomain label. */
   id: string;
   /** Resolve a pathname to file content; `null` means 404. */
@@ -20,6 +20,8 @@ export interface SandboxFrameProps
   csp?: string;
   /** Awaited before `init` is sent back on `ready`. */
   onReady?: () => void | Promise<void>;
+  /** Filled with the frame's `post` function so the caller can push notifications. */
+  postRef?: React.MutableRefObject<((msg: Record<string, unknown>) => void) | null>;
 }
 
 const SANDBOX_ALLOW = [
@@ -44,7 +46,7 @@ interface JsonRpcMessage {
  * Sandboxed content frame on a unique `<id>.<SANDBOX_DOMAIN>` origin,
  * implementing the iframe.diy handshake + fetch proxy protocol.
  */
-export function SandboxFrame({ id, resolveFile, onRpc, csp, onReady, ...iframeProps }: SandboxFrameProps) {
+export function SandboxFrame({ id, resolveFile, onRpc, csp, onReady, postRef, ...iframeProps }: SandboxFrameProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const origin = useMemo(() => `https://${id}.${SANDBOX_DOMAIN}`, [id]);
 
@@ -65,6 +67,13 @@ export function SandboxFrame({ id, resolveFile, onRpc, csp, onReady, ...iframePr
     },
     [origin],
   );
+
+  useEffect(() => {
+    if (postRef) postRef.current = post;
+    return () => {
+      if (postRef) postRef.current = null;
+    };
+  }, [post, postRef]);
 
   useEffect(() => {
     async function handleFetch(id: string | number, params: { request?: SerialisedRequest } | undefined) {
@@ -152,6 +161,10 @@ export function SandboxFrame({ id, resolveFile, onRpc, csp, onReady, ...iframePr
           void handleFetch(msg.id, msg.params as { request?: SerialisedRequest } | undefined);
         } else if (onRpcRef.current) {
           void handleRpc(msg.id, msg.method, msg.params ?? {});
+        } else {
+          // No RPC handler: reply Method not found so the frame's promise
+          // resolves instead of hanging forever.
+          post({ jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: `Method not found: ${msg.method}` } });
         }
       }
     }

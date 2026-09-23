@@ -18,6 +18,9 @@ function hexToBase36(hex: string): string {
 
 const SEED_KEY = 'webxdc-explorer:sandbox-seed';
 
+/** Per-page-load fallback when localStorage is unavailable. */
+const EPHEMERAL_SEED = crypto.randomUUID();
+
 /**
  * Device-local random seed. Keeps per-app sandbox subdomains unguessable so
  * one app cannot reach another app's origin-keyed storage.
@@ -30,7 +33,7 @@ function getSeed(): string {
     localStorage.setItem(SEED_KEY, seed);
     return seed;
   } catch {
-    return 'webxdc-explorer-ephemeral-sandbox-seed';
+    return EPHEMERAL_SEED;
   }
 }
 

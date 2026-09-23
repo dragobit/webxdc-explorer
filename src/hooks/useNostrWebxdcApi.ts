@@ -12,6 +12,7 @@ import type {
 
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
+import { useToast } from '@/hooks/useToast';
 import { useWebxdcUpdates } from '@/hooks/useWebxdcUpdates';
 import { base64ToBytes, bytesToBase64 } from '@/lib/sandbox';
 import {
@@ -52,6 +53,7 @@ export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
   const queryClient = useQueryClient();
   const { user, metadata } = useCurrentUser();
   const { mutate: publish } = useNostrPublish();
+  const { toast } = useToast();
   const updatesQuery = useWebxdcUpdates(identifier);
   const queryKey = useMemo(() => ['webxdc-updates', identifier], [identifier]);
 
@@ -103,7 +105,12 @@ export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
 
   useEffect(() => {
     const controller = new AbortController();
-    const since = Math.floor(Date.now() / 1000) - 5;
+    // Events between the last cached query result and this subscription
+    // would be missed by `now - 5`; anchor `since` at the newest cached
+    // event instead (duplicates are deduped by id downstream).
+    const cached = queryClient.getQueryData<NostrEvent[]>(queryKey);
+    const maxCreated = cached?.reduce((max, e) => Math.max(max, e.created_at), 0) ?? 0;
+    const since = maxCreated || Math.floor(Date.now() / 1000) - 5;
 
     (async () => {
       try {
@@ -147,8 +154,15 @@ export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
       if (update.document) tags.push(['document', update.document]);
       if (update.summary) tags.push(['summary', update.summary]);
       publish(
-        { kind: WEBXDC_UPDATE_KIND, content: JSON.stringify(update.payload), tags },
+        { kind: WEBXDC_UPDATE_KIND, content: JSON.stringify(update.payload) ?? 'null', tags },
         {
+          onError: () => {
+            toast({
+              title: 'Failed to publish update',
+              description: 'The app could not send its state to relays.',
+              variant: 'destructive',
+            });
+          },
           onSuccess: (event) => {
             queryClient.setQueryData<NostrEvent[]>(queryKey, (old) => {
               if (old?.some((e) => e.id === event.id)) return old;
@@ -158,7 +172,7 @@ export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
         },
       );
     },
-    [identifier, publish, queryClient, queryKey],
+    [identifier, publish, queryClient, queryKey, toast],
   );
 
   const setUpdateListener = useCallback(
