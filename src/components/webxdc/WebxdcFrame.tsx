@@ -5,6 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js';
 import type { Webxdc as WebxdcAPI, ReceivedStatusUpdate, RealtimeListener } from '@webxdc/types/webxdc';
 
 import { SandboxFrame } from '@/components/webxdc/SandboxFrame';
+import { SANDBOX_DOMAIN } from '@/lib/iframeSubdomain';
 import { getMimeType, injectScriptTags } from '@/lib/sandbox';
 import type { FileResponse } from '@/lib/sandbox';
 
@@ -245,7 +246,13 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       try {
         const bytes = await fetchXdc(xdcUrl, expectedSha256);
         fileMapRef.current = unzipXdc(bytes);
-        bridgeScriptRef.current = generateWebxdcBridge(webxdcRef.current, window.location.origin);
+        // The app's window.parent is the iframe.diy loader on the sandbox
+        // origin, which relays our RPCs to this page. The bridge must
+        // therefore target the sandbox origin, not this page's origin.
+        bridgeScriptRef.current = generateWebxdcBridge(
+          webxdcRef.current,
+          `https://${id}.${SANDBOX_DOMAIN}`,
+        );
       } catch (err) {
         console.error('[WebxdcFrame] Failed to initialise:', err);
         onLoadErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
@@ -253,7 +260,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       }
     })();
     return loadPromiseRef.current;
-  }, [xdcUrl, expectedSha256, leaveAllChannels]);
+  }, [id, xdcUrl, expectedSha256, leaveAllChannels]);
 
   const resolveFile = useCallback(async (pathname: string): Promise<FileResponse | null> => {
     if (pathname === '/webxdc.js') {
