@@ -32,6 +32,7 @@ function RunningApp({ identifier, xdcUrl, sha256, appName, fullscreen }: WebxdcR
 
   return (
     <WebxdcFrame
+      key={xdcUrl}
       id={frameId}
       xdcUrl={xdcUrl}
       sha256={sha256}
