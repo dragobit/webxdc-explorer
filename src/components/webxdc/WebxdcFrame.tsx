@@ -293,15 +293,6 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
   const realtimeChannels = useRef<Map<string, RealtimeListener>>(new Map());
   const postRef = useRef<((msg: Record<string, unknown>) => void) | null>(null);
 
-  // The archive is fetched once per document; if the caller swaps the .xdc,
-  // the next `ready` must refetch rather than reuse the previous bundle.
-  const xdcRef = useRef(xdcUrl);
-  if (xdcRef.current !== xdcUrl) {
-    xdcRef.current = xdcUrl;
-    loadPromiseRef.current = null;
-    fileMapRef.current = null;
-  }
-
   // Push identity changes (e.g. login after Run) into the live frame so
   // `webxdc.selfAddr`/`selfName` stay current without a Stop/Run cycle.
   useEffect(() => {

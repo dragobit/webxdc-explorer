@@ -108,6 +108,7 @@ function RunningApp({ identifier, xdcUrl, sha256, appName, fullscreen }: WebxdcR
     <div className={cn('relative', fullscreen && 'h-full')}>
       <ImportFilesPrompt appName={appName} request={importReq?.filter ?? null} onFiles={settleImport} />
       <WebxdcFrame
+        key={xdcUrl}
         id={frameId}
         xdcUrl={xdcUrl}
         sha256={sha256}
