@@ -84,6 +84,7 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): st
   var updateListener = null;
   var realtimeDataListener = null;
   var realtimeChannelId = null;
+  var identity = { selfAddr: ${JSON.stringify(api.selfAddr)}, selfName: ${JSON.stringify(api.selfName)} };
 
   function send(msg) { window.parent.postMessage(msg, PARENT_ORIGIN); }
 
@@ -116,13 +117,16 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): st
         case "webxdc.realtimeChannel.data":
           if (realtimeDataListener) realtimeDataListener(new Uint8Array(data.params.data));
           break;
+        case "webxdc.identity":
+          identity = data.params.identity;
+          break;
       }
     }
   });
 
   window.webxdc = {
-    selfAddr: ${JSON.stringify(api.selfAddr)},
-    selfName: ${JSON.stringify(api.selfName)},
+    get selfAddr() { return identity.selfAddr; },
+    get selfName() { return identity.selfName; },
     sendUpdateInterval: ${api.sendUpdateInterval},
     sendUpdateMaxSize: ${api.sendUpdateMaxSize},
     sendUpdate: function(update, descr) {
@@ -230,6 +234,26 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
   const bridgeScriptRef = useRef('');
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const realtimeChannels = useRef<Map<string, RealtimeListener>>(new Map());
+  const postRef = useRef<((msg: Record<string, unknown>) => void) | null>(null);
+
+  // The archive is fetched once per document; if the caller swaps the .xdc,
+  // the next `ready` must refetch rather than reuse the previous bundle.
+  const xdcRef = useRef(xdcUrl);
+  if (xdcRef.current !== xdcUrl) {
+    xdcRef.current = xdcUrl;
+    loadPromiseRef.current = null;
+    fileMapRef.current = null;
+  }
+
+  // Push identity changes (e.g. login after Run) into the live frame so
+  // `webxdc.selfAddr`/`selfName` stay current without a Stop/Run cycle.
+  useEffect(() => {
+    postRef.current?.({
+      jsonrpc: '2.0',
+      method: 'webxdc.identity',
+      params: { identity: { selfAddr: webxdc.selfAddr, selfName: webxdc.selfName } },
+    });
+  }, [webxdc.selfAddr, webxdc.selfName]);
 
   // Each `ready` is a fresh document; realtime state that belonged to the
   // previous one must not survive it.
@@ -355,6 +379,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       onRpc={onRpc}
       csp={WEBXDC_CSP}
       onReady={onReady}
+      postRef={postRef}
       {...iframeProps}
     />
   );
