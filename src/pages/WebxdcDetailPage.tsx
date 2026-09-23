@@ -4,6 +4,7 @@ import { useSeoMeta } from '@unhead/react';
 import { Braces, Copy, ExternalLink } from 'lucide-react';
 
 import { EventJsonDialog } from '@/components/webxdc/EventJsonDialog';
+import { WebxdcRunner } from '@/components/webxdc/WebxdcRunner';
 import { UpdateRow } from '@/components/app-detail/UpdateRow';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -13,7 +14,7 @@ import { useAuthor } from '@/hooks/useAuthor';
 import { useToast } from '@/hooks/useToast';
 import { useWebxdcAppById } from '@/hooks/useWebxdcAppById';
 import { useWebxdcUpdates } from '@/hooks/useWebxdcUpdates';
-import { getWebxdcName, getWebxdcUrl } from '@/lib/webxdc';
+import { getWebxdcAttachments, getWebxdcName, getWebxdcUrl } from '@/lib/webxdc';
 
 function httpsUrl(url: string | undefined): string | undefined {
   if (!url) return undefined;
@@ -36,6 +37,7 @@ const WebxdcDetailPage = () => {
   const author = useAuthor(app.data?.pubkey);
   const appName = app.data ? getWebxdcName(app.data) : undefined;
   const xdcUrl = httpsUrl(app.data ? getWebxdcUrl(app.data) : undefined);
+  const xdcSha256 = app.data ? getWebxdcAttachments(app.data)[0]?.sha256 : undefined;
 
   const participants = useMemo(
     () => new Set(updates.data?.map((e) => e.pubkey) ?? []).size,
@@ -107,6 +109,15 @@ const WebxdcDetailPage = () => {
           )}
         </CardHeader>
       </Card>
+
+      {i && xdcUrl && (
+        <WebxdcRunner
+          identifier={i}
+          xdcUrl={xdcUrl}
+          sha256={xdcSha256}
+          appName={appName ?? 'webxdc app'}
+        />
+      )}
 
       <Card>
         <CardHeader>
