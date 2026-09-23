@@ -23,6 +23,11 @@ import {
 
 type UpdateListener = (update: ReceivedStatusUpdate<unknown>) => void;
 
+interface UpdateEntry {
+  id: string;
+  update: ReceivedStatusUpdate<unknown>;
+}
+
 /**
  * NIP-DC backed `window.webxdc` implementation for one coordination
  * identifier: kind 4932 events are the durable state plane, kind 20932
@@ -43,34 +48,40 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
     [metadata, selfPubkey],
   );
 
-  const updates = useMemo((): ReceivedStatusUpdate<unknown>[] => {
+  // Serials are positional in the sorted list, so a late-arriving older event
+  // shifts them; delivery is therefore tracked by event id, not by serial.
+  const entries = useMemo((): UpdateEntry[] => {
     const events = updatesQuery.data ?? [];
     return events.map((event, index) => {
       const parsed = parseWebxdcUpdate(event);
       return {
-        payload: parsed?.payload ?? event.content,
-        serial: index + 1,
-        max_serial: events.length,
-        ...(parsed?.info && { info: parsed.info }),
-        ...(parsed?.document && { document: parsed.document }),
-        ...(parsed?.summary && { summary: parsed.summary }),
+        id: event.id,
+        update: {
+          payload: parsed?.payload ?? event.content,
+          serial: index + 1,
+          max_serial: events.length,
+          ...(parsed?.info && { info: parsed.info }),
+          ...(parsed?.document && { document: parsed.document }),
+          ...(parsed?.summary && { summary: parsed.summary }),
+        },
       };
     });
   }, [updatesQuery.data]);
 
+  const updates = useMemo(() => entries.map((e) => e.update), [entries]);
+
   const listenerRef = useRef<UpdateListener | null>(null);
-  const lastSerialRef = useRef(0);
+  const deliveredRef = useRef(new Set<string>());
 
   useEffect(() => {
     const listener = listenerRef.current;
     if (!listener) return;
-    for (const update of updates) {
-      if (update.serial > lastSerialRef.current) {
-        listener(update);
-        lastSerialRef.current = update.serial;
-      }
+    for (const { id, update } of entries) {
+      if (deliveredRef.current.has(id)) continue;
+      deliveredRef.current.add(id);
+      listener(update);
     }
-  }, [updates]);
+  }, [entries]);
 
   // Live subscriptions while the app is open: state updates are merged into
   // the query cache; realtime frames go straight to listeners.
@@ -139,15 +150,14 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
   const setUpdateListener = useCallback(
     async (cb: UpdateListener, serial?: number): Promise<void> => {
       listenerRef.current = cb;
-      lastSerialRef.current = serial ?? 0;
-      for (const update of updates) {
-        if (update.serial > (serial ?? 0)) {
-          cb(update);
-          lastSerialRef.current = update.serial;
-        }
+      const delivered = new Set<string>();
+      for (const { id, update } of entries) {
+        delivered.add(id);
+        if (update.serial > (serial ?? 0)) cb(update);
       }
+      deliveredRef.current = delivered;
     },
-    [updates],
+    [entries],
   );
 
   const getAllUpdates = useCallback(async () => updates, [updates]);

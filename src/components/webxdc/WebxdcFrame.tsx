@@ -21,8 +21,13 @@ export interface WebxdcFrameProps
   onLoadError?: (err: Error) => void;
 }
 
-/** Ceiling on a `.xdc` bundle. */
+/** Ceiling on a `.xdc` bundle (compressed). */
 const MAX_XDC_BYTES = 100 * 1024 * 1024;
+/** Ceilings on the unpacked archive, per entry and in total. */
+const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
+const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
+/** Realtime frames are capped by the webxdc spec. */
+const MAX_REALTIME_BYTES = 128_000;
 
 /** webxdc spec: all internet access is denied. */
 const WEBXDC_CSP = [
@@ -48,7 +53,15 @@ async function fetchXdc(url: string, expectedSha256?: string): Promise<Uint8Arra
 }
 
 function unzipXdc(bytes: Uint8Array): Map<string, Uint8Array> {
-  const unzipped = unzipSync(bytes);
+  let total = 0;
+  const unzipped = unzipSync(bytes, {
+    filter: (file) => {
+      if (file.originalSize > MAX_ENTRY_BYTES) throw new Error(`.xdc entry too large: ${file.name}`);
+      total += file.originalSize;
+      if (total > MAX_UNPACKED_BYTES) throw new Error('.xdc unpacked size exceeds limit');
+      return true;
+    },
+  });
   const fileMap = new Map<string, Uint8Array>();
   for (const [path, content] of Object.entries(unzipped)) {
     const normalised = path.replace(/^\/+/, '').replace(/\\/g, '/');
@@ -62,15 +75,16 @@ function unzipXdc(bytes: Uint8Array): Map<string, Uint8Array> {
  * Bridge script injected into every HTML file of the archive. Implements
  * `window.webxdc` by sending JSON-RPC requests to the parent window.
  */
-function generateWebxdcBridge(api: WebxdcAPI<unknown>): string {
+function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): string {
   return `(function(){
+  var PARENT_ORIGIN = ${JSON.stringify(parentOrigin)};
   var nextId = 1;
   var pending = {};
   var updateListener = null;
   var realtimeDataListener = null;
   var realtimeChannelId = null;
 
-  function send(msg) { window.parent.postMessage(msg, "*"); }
+  function send(msg) { window.parent.postMessage(msg, PARENT_ORIGIN); }
 
   function sendRequest(method, params) {
     var id = nextId++;
@@ -81,6 +95,7 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>): string {
   }
 
   window.addEventListener("message", function(event) {
+    if (event.source !== window.parent || event.origin !== PARENT_ORIGIN) return;
     var data = event.data;
     if (!data || typeof data !== "object" || data.jsonrpc !== "2.0") return;
     if (data.id !== undefined && !data.method) {
@@ -151,11 +166,50 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>): string {
 }
 
 interface RpcParams {
-  update?: Parameters<WebxdcAPI<unknown>['sendUpdate']>[0];
+  update?: unknown;
   serial?: number;
   message?: string;
   channelId?: string;
-  data?: number[];
+  data?: unknown;
+}
+
+type OutgoingUpdate = Parameters<WebxdcAPI<unknown>['sendUpdate']>[0];
+
+function optionalString(value: unknown, name: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') throw new Error(`update.${name} must be a string`);
+  return value;
+}
+
+/** Validates an untrusted `sendUpdate` argument coming from the iframe. */
+function parseOutgoingUpdate(raw: unknown, maxSize: number): OutgoingUpdate {
+  if (!raw || typeof raw !== 'object') throw new Error('update must be an object');
+  const rec = raw as Record<string, unknown>;
+  if (!('payload' in rec)) throw new Error('update.payload is required');
+  const payload = rec.payload;
+  if (JSON.stringify(payload).length > maxSize) throw new Error('update exceeds sendUpdateMaxSize');
+  const update: OutgoingUpdate = { payload };
+  const info = optionalString(rec.info, 'info');
+  const document = optionalString(rec.document, 'document');
+  const summary = optionalString(rec.summary, 'summary');
+  if (info !== undefined) update.info = info;
+  if (document !== undefined) update.document = document;
+  if (summary !== undefined) update.summary = summary;
+  return update;
+}
+
+function parseBytes(raw: unknown): Uint8Array {
+  if (!Array.isArray(raw)) throw new Error('data must be a byte array');
+  if (raw.length > MAX_REALTIME_BYTES) throw new Error('Realtime payload exceeds 128,000 byte limit');
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) {
+    const v: unknown = raw[i];
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 255) {
+      throw new Error('data must contain bytes (0-255)');
+    }
+    bytes[i] = v;
+  }
+  return bytes;
 }
 
 /**
@@ -176,20 +230,22 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const realtimeChannels = useRef<Map<string, RealtimeListener>>(new Map());
 
-  useEffect(() => {
-    const channels = realtimeChannels.current;
-    return () => {
-      for (const ch of channels.values()) ch.leave();
-      channels.clear();
-    };
+  // Each `ready` is a fresh document; realtime state that belonged to the
+  // previous one must not survive it.
+  const leaveAllChannels = useCallback(() => {
+    for (const ch of realtimeChannels.current.values()) ch.leave();
+    realtimeChannels.current.clear();
   }, []);
 
+  useEffect(() => leaveAllChannels, [leaveAllChannels]);
+
   const onReady = useCallback(() => {
+    leaveAllChannels();
     loadPromiseRef.current ??= (async () => {
       try {
         const bytes = await fetchXdc(xdcUrl, expectedSha256);
         fileMapRef.current = unzipXdc(bytes);
-        bridgeScriptRef.current = generateWebxdcBridge(webxdcRef.current);
+        bridgeScriptRef.current = generateWebxdcBridge(webxdcRef.current, window.location.origin);
       } catch (err) {
         console.error('[WebxdcFrame] Failed to initialise:', err);
         onLoadErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
@@ -197,7 +253,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       }
     })();
     return loadPromiseRef.current;
-  }, [xdcUrl, expectedSha256]);
+  }, [xdcUrl, expectedSha256, leaveAllChannels]);
 
   const resolveFile = useCallback(async (pathname: string): Promise<FileResponse | null> => {
     if (pathname === '/webxdc.js') {
@@ -230,7 +286,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
 
       switch (method) {
         case 'webxdc.sendUpdate':
-          if (params.update) api.sendUpdate(params.update, '');
+          api.sendUpdate(parseOutgoingUpdate(params.update, api.sendUpdateMaxSize ?? 65536), '');
           return null;
 
         case 'webxdc.setUpdateListener':
@@ -265,7 +321,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
 
         case 'webxdc.realtimeChannel.send': {
           const ch = params.channelId ? realtimeChannels.current.get(params.channelId) : undefined;
-          if (ch && params.data) ch.send(new Uint8Array(params.data));
+          if (ch) ch.send(parseBytes(params.data));
           return null;
         }
 

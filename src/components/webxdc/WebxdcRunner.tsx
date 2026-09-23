@@ -58,7 +58,7 @@ export function WebxdcRunner(props: WebxdcRunnerProps) {
         <div>
           <h2 className="font-semibold">Run app</h2>
           <p className="text-sm text-muted-foreground">
-            Runs sandboxed on an isolated origin with no network access.
+            Runs sandboxed on an isolated origin; the app&apos;s own requests are blocked from reaching the network.
             {!user && ' Log in to send updates; viewing works anonymously.'}
           </p>
         </div>

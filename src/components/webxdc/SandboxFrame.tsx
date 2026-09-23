@@ -166,8 +166,9 @@ export function SandboxFrame({ id, resolveFile, onRpc, csp, onReady, ...iframePr
       src={`${origin}/`}
       allow={SANDBOX_ALLOW}
       // allow-same-origin is safe because the frame lives on a distinct
-      // HMAC-derived subdomain; allow-top-navigation is deliberately omitted.
-      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-popups-to-escape-sandbox allow-downloads allow-pointer-lock"
+      // HMAC-derived subdomain. allow-top-navigation and allow-popups are
+      // deliberately omitted so the app cannot open an unsandboxed window.
+      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads allow-pointer-lock"
       {...iframeProps}
     />
   );
