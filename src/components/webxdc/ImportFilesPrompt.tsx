@@ -37,6 +37,20 @@ export function ImportFilesPrompt({ appName, request, onFiles }: ImportFilesProm
     if (inputRef.current) inputRef.current.value = '';
   }, [request]);
 
+  const onFilesRef = useRef(onFiles);
+  useEffect(() => {
+    onFilesRef.current = onFiles;
+  }, [onFiles]);
+
+  // Picker-cancel doesn't fire `change`; the `cancel` event settles the RPC.
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    const handleCancel = () => onFilesRef.current([]);
+    input.addEventListener('cancel', handleCancel);
+    return () => input.removeEventListener('cancel', handleCancel);
+  }, [request]);
+
   if (!request) return null;
 
   const handleChange = () => {

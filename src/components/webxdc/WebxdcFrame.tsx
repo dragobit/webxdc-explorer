@@ -207,10 +207,11 @@ function parseSendOptions(raw: unknown): SendOptions {
     if (variants.length !== 1) throw new Error('message.file needs exactly one of plainText/base64/blob');
     if (variants[0] === 'plainText') {
       if (typeof f.plainText !== 'string') throw new Error('file.plainText must be a string');
-      if (f.plainText.length > MAX_SEND_FILE_BYTES) throw new Error('file too large');
+      if (new TextEncoder().encode(f.plainText).length > MAX_SEND_FILE_BYTES) throw new Error('file too large');
       out.file = { name: f.name, plainText: f.plainText };
     } else if (variants[0] === 'base64') {
       if (typeof f.base64 !== 'string') throw new Error('file.base64 must be a string');
+      if (f.base64.length > Math.ceil(MAX_SEND_FILE_BYTES / 3) * 4) throw new Error('file too large');
       out.file = { name: f.name, base64: f.base64 };
     } else {
       if (!(f.blob instanceof Blob)) throw new Error('file.blob must be a Blob');

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Webxdc as WebxdcAPI } from '@webxdc/types/webxdc';
 
 import { Button } from '@/components/ui/button';
@@ -26,7 +26,7 @@ interface SendToChatDialogProps {
   /** The message the app asked to send; `null` keeps the dialog closed. */
   request: SendOptions | null;
   /** Called once the request is settled: `true` = posted, `false` = cancelled/failed. */
-  onDone: (posted: boolean) => void;
+  onDone: (posted: boolean, reason?: string) => void;
 }
 
 function downloadFile(file: File) {
@@ -61,6 +61,17 @@ export function SendToChatDialog({ appName, request, xdcUrl, onDone }: SendToCha
     }
   }, [request]);
 
+  const previewUrl = useMemo(
+    () => (file?.type.startsWith('image/') ? globalThis.URL.createObjectURL(file) : null),
+    [file],
+  );
+  useEffect(
+    () => () => {
+      if (previewUrl) globalThis.URL.revokeObjectURL(previewUrl);
+    },
+    [previewUrl],
+  );
+
   // Reset the editable draft whenever a new request arrives (adjust-during-render).
   if (request !== prevRequest) {
     setPrevRequest(request);
@@ -68,9 +79,9 @@ export function SendToChatDialog({ appName, request, xdcUrl, onDone }: SendToCha
     setBusy(false);
   }
 
-  const finish = (posted: boolean) => {
+  const finish = (posted: boolean, reason?: string) => {
     setBusy(false);
-    onDone(posted);
+    onDone(posted, reason);
   };
 
   const post = async () => {
@@ -84,21 +95,21 @@ export function SendToChatDialog({ appName, request, xdcUrl, onDone }: SendToCha
       if (file) {
         const uploadTags = await uploadFile(file);
         const url = uploadTags[0]?.[1];
-        if (url) {
-          content = content ? `${content}\n\n${url}` : url;
-          tags.push(['imeta', ...uploadTags.map(([n, v]) => `${n} ${v}`)]);
-        }
+        if (!url) throw new Error('File upload returned no URL');
+        content = content ? `${content}\n\n${url}` : url;
+        tags.push(['imeta', ...uploadTags.map(([n, v]) => `${n} ${v}`)]);
       }
       await publishEvent({ kind: 1, content, tags });
       toast({ title: 'Posted note' });
       finish(true);
     } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
       toast({
         title: 'Failed to post',
-        description: err instanceof Error ? err.message : String(err),
+        description: reason,
         variant: 'destructive',
       });
-      finish(false);
+      finish(false, `sendToChat failed: ${reason}`);
     }
   };
 
@@ -121,9 +132,9 @@ export function SendToChatDialog({ appName, request, xdcUrl, onDone }: SendToCha
         />
         {file && (
           <div className="flex items-center gap-3 rounded-md border px-3 py-2 text-sm">
-            {file.type.startsWith('image/') && (
+            {previewUrl && (
               <img
-                src={globalThis.URL.createObjectURL(file)}
+                src={previewUrl}
                 alt=""
                 className="size-10 rounded object-cover"
               />

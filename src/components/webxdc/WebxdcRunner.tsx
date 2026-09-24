@@ -80,13 +80,13 @@ function RunningApp({ identifier, xdcUrl, sha256, appName, fullscreen }: WebxdcR
     };
   }, [setSendToChatHandler, setImportFilesHandler]);
 
-  const settleChat = (posted: boolean) => {
+  const settleChat = (posted: boolean, reason?: string) => {
     const req = chatReqRef.current;
     chatReqRef.current = null;
     setChatReq(null);
     if (!req) return;
     if (posted) req.resolve();
-    else req.reject(new Error('sendToChat cancelled'));
+    else req.reject(new Error(reason ?? 'sendToChat cancelled'));
   };
 
   const settleImport = (files: File[]) => {
