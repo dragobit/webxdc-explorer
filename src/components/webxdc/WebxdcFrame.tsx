@@ -2,9 +2,10 @@ import { useCallback, useEffect, useRef, type IframeHTMLAttributes } from 'react
 import { unzipSync } from 'fflate';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
-import type { Webxdc as WebxdcAPI, ReceivedStatusUpdate, RealtimeListener } from '@webxdc/types/webxdc';
+import type { Webxdc as WebxdcAPI, ReceivedStatusUpdate, RealtimeListener, XDCFile } from '@webxdc/types/webxdc';
 
 import { SandboxFrame } from '@/components/webxdc/SandboxFrame';
+import { SANDBOX_DOMAIN } from '@/lib/iframeSubdomain';
 import { getMimeType, injectScriptTags } from '@/lib/sandbox';
 import type { FileResponse } from '@/lib/sandbox';
 
@@ -28,6 +29,10 @@ const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 /** Realtime frames are capped by the webxdc spec. */
 const MAX_REALTIME_BYTES = 128_000;
+/** Limits on user-mediated sendToChat / importFiles requests. */
+const MAX_SEND_TEXT = 4000;
+const MAX_SEND_FILE_BYTES = 10 * 1024 * 1024;
+const EXT_RE = /^\.[A-Za-z0-9]+$/;
 
 /** webxdc spec: all internet access is denied. */
 const WEBXDC_CSP = [
@@ -83,6 +88,7 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): st
   var updateListener = null;
   var realtimeDataListener = null;
   var realtimeChannelId = null;
+  var identity = { selfAddr: ${JSON.stringify(api.selfAddr)}, selfName: ${JSON.stringify(api.selfName)} };
 
   function send(msg) { window.parent.postMessage(msg, PARENT_ORIGIN); }
 
@@ -115,13 +121,16 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): st
         case "webxdc.realtimeChannel.data":
           if (realtimeDataListener) realtimeDataListener(new Uint8Array(data.params.data));
           break;
+        case "webxdc.identity":
+          identity = data.params.identity;
+          break;
       }
     }
   });
 
   window.webxdc = {
-    selfAddr: ${JSON.stringify(api.selfAddr)},
-    selfName: ${JSON.stringify(api.selfName)},
+    get selfAddr() { return identity.selfAddr; },
+    get selfName() { return identity.selfName; },
     sendUpdateInterval: ${api.sendUpdateInterval},
     sendUpdateMaxSize: ${api.sendUpdateMaxSize},
     sendUpdate: function(update, descr) {
@@ -168,12 +177,66 @@ function generateWebxdcBridge(api: WebxdcAPI<unknown>, parentOrigin: string): st
 interface RpcParams {
   update?: unknown;
   serial?: number;
-  message?: string;
+  message?: unknown;
+  filter?: unknown;
   channelId?: string;
   data?: unknown;
 }
 
 type OutgoingUpdate = Parameters<WebxdcAPI<unknown>['sendUpdate']>[0];
+type SendOptions = Parameters<WebxdcAPI<unknown>['sendToChat']>[0];
+type ImportFilesFilter = Parameters<WebxdcAPI<unknown>['importFiles']>[0];
+
+/** Validates an untrusted `sendToChat` argument coming from the iframe. */
+function parseSendOptions(raw: unknown): SendOptions {
+  if (!raw || typeof raw !== 'object') throw new Error('message must be an object');
+  const rec = raw as Record<string, unknown>;
+  const out: { text?: string; file?: XDCFile } = {};
+  if (rec.text !== undefined && rec.text !== null) {
+    if (typeof rec.text !== 'string') throw new Error('message.text must be a string');
+    if (rec.text.length > MAX_SEND_TEXT) throw new Error('message.text too long');
+    out.text = rec.text;
+  }
+  if (rec.file !== undefined && rec.file !== null) {
+    const f = rec.file as Record<string, unknown>;
+    if (!f || typeof f !== 'object') throw new Error('message.file must be an object');
+    if (typeof f.name !== 'string' || f.name.length === 0 || f.name.length > 255) {
+      throw new Error('message.file.name invalid');
+    }
+    const variants = ['plainText', 'base64', 'blob'].filter((k) => f[k] !== undefined && f[k] !== null);
+    if (variants.length !== 1) throw new Error('message.file needs exactly one of plainText/base64/blob');
+    if (variants[0] === 'plainText') {
+      if (typeof f.plainText !== 'string') throw new Error('file.plainText must be a string');
+      if (new TextEncoder().encode(f.plainText).length > MAX_SEND_FILE_BYTES) throw new Error('file too large');
+      out.file = { name: f.name, plainText: f.plainText };
+    } else if (variants[0] === 'base64') {
+      if (typeof f.base64 !== 'string') throw new Error('file.base64 must be a string');
+      if (f.base64.length > Math.ceil(MAX_SEND_FILE_BYTES / 3) * 4) throw new Error('file too large');
+      out.file = { name: f.name, base64: f.base64 };
+    } else {
+      if (!(f.blob instanceof Blob)) throw new Error('file.blob must be a Blob');
+      if (f.blob.size > MAX_SEND_FILE_BYTES) throw new Error('file too large');
+      out.file = { name: f.name, blob: f.blob };
+    }
+  }
+  if (out.text === undefined && out.file === undefined) throw new Error('message needs text or file');
+  return out as SendOptions;
+}
+
+/** Validates an untrusted `importFiles` filter coming from the iframe. */
+function parseImportFilter(raw: unknown): ImportFilesFilter {
+  const out: { extensions?: string[]; mimeTypes?: string[]; multiple?: boolean } = {};
+  if (!raw || typeof raw !== 'object') return out;
+  const rec = raw as Record<string, unknown>;
+  if (Array.isArray(rec.extensions)) {
+    out.extensions = rec.extensions.filter((e): e is string => typeof e === 'string' && EXT_RE.test(e));
+  }
+  if (Array.isArray(rec.mimeTypes)) {
+    out.mimeTypes = rec.mimeTypes.filter((m): m is string => typeof m === 'string' && m.length <= 100);
+  }
+  if (typeof rec.multiple === 'boolean') out.multiple = rec.multiple;
+  return out;
+}
 
 function optionalString(value: unknown, name: string): string | undefined {
   if (value === undefined || value === null) return undefined;
@@ -229,6 +292,17 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
   const bridgeScriptRef = useRef('');
   const loadPromiseRef = useRef<Promise<void> | null>(null);
   const realtimeChannels = useRef<Map<string, RealtimeListener>>(new Map());
+  const postRef = useRef<((msg: Record<string, unknown>) => void) | null>(null);
+
+  // Push identity changes (e.g. login after Run) into the live frame so
+  // `webxdc.selfAddr`/`selfName` stay current without a Stop/Run cycle.
+  useEffect(() => {
+    postRef.current?.({
+      jsonrpc: '2.0',
+      method: 'webxdc.identity',
+      params: { identity: { selfAddr: webxdc.selfAddr, selfName: webxdc.selfName } },
+    });
+  }, [webxdc.selfAddr, webxdc.selfName]);
 
   // Each `ready` is a fresh document; realtime state that belonged to the
   // previous one must not survive it.
@@ -245,7 +319,13 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       try {
         const bytes = await fetchXdc(xdcUrl, expectedSha256);
         fileMapRef.current = unzipXdc(bytes);
-        bridgeScriptRef.current = generateWebxdcBridge(webxdcRef.current, window.location.origin);
+        // The app's window.parent is the iframe.diy loader on the sandbox
+        // origin, which relays our RPCs to this page. The bridge must
+        // therefore target the sandbox origin, not this page's origin.
+        bridgeScriptRef.current = generateWebxdcBridge(
+          webxdcRef.current,
+          `https://${id}.${SANDBOX_DOMAIN}`,
+        );
       } catch (err) {
         console.error('[WebxdcFrame] Failed to initialise:', err);
         onLoadErrorRef.current?.(err instanceof Error ? err : new Error(String(err)));
@@ -253,7 +333,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       }
     })();
     return loadPromiseRef.current;
-  }, [xdcUrl, expectedSha256, leaveAllChannels]);
+  }, [id, xdcUrl, expectedSha256, leaveAllChannels]);
 
   const resolveFile = useCallback(async (pathname: string): Promise<FileResponse | null> => {
     if (pathname === '/webxdc.js') {
@@ -267,7 +347,9 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
     if (!fileMap) {
       return { status: 503, contentType: 'text/plain', body: new TextEncoder().encode('Archive not loaded') };
     }
-    const filePath = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
+    const filePath = pathname.endsWith('/')
+      ? decodeURIComponent(pathname.slice(1)) + 'index.html'
+      : decodeURIComponent(pathname.slice(1));
     const fileBytes = fileMap.get(filePath);
     if (!fileBytes) return null;
 
@@ -299,10 +381,11 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
           return await api.getAllUpdates();
 
         case 'webxdc.sendToChat':
-          throw new Error('sendToChat is not supported');
+          await api.sendToChat(parseSendOptions(params.message));
+          return null;
 
         case 'webxdc.importFiles':
-          return [];
+          return await api.importFiles(parseImportFilter(params.filter));
 
         case 'webxdc.joinRealtimeChannel': {
           if (!api.joinRealtimeChannel) throw new Error('Realtime channels are not supported');
@@ -348,6 +431,7 @@ export function WebxdcFrame({ id, xdcUrl, sha256: expectedSha256, webxdc, onLoad
       onRpc={onRpc}
       csp={WEBXDC_CSP}
       onReady={onReady}
+      postRef={postRef}
       {...iframeProps}
     />
   );

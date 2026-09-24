@@ -12,6 +12,7 @@ import type {
 
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostrPublish } from '@/hooks/useNostrPublish';
+import { useToast } from '@/hooks/useToast';
 import { useWebxdcUpdates } from '@/hooks/useWebxdcUpdates';
 import { base64ToBytes, bytesToBase64 } from '@/lib/sandbox';
 import {
@@ -23,9 +24,23 @@ import {
 
 type UpdateListener = (update: ReceivedStatusUpdate<unknown>) => void;
 
+export type SendOptions = Parameters<WebxdcAPI<unknown>['sendToChat']>[0];
+export type ImportFilesFilter = Parameters<WebxdcAPI<unknown>['importFiles']>[0];
+
+export type SendToChatHandler = (message: SendOptions) => Promise<void>;
+export type ImportFilesHandler = (filter: ImportFilesFilter) => Promise<File[]>;
+
 interface UpdateEntry {
   id: string;
   update: ReceivedStatusUpdate<unknown>;
+}
+
+export interface NostrWebxdcApi {
+  api: WebxdcAPI<unknown>;
+  /** Register the UI handler that mediates `webxdc.sendToChat`. */
+  setSendToChatHandler: (fn: SendToChatHandler | null) => void;
+  /** Register the UI handler that mediates `webxdc.importFiles`. */
+  setImportFilesHandler: (fn: ImportFilesHandler | null) => void;
 }
 
 /**
@@ -33,11 +48,12 @@ interface UpdateEntry {
  * identifier: kind 4932 events are the durable state plane, kind 20932
  * ephemeral events are the realtime plane. Both are public.
  */
-export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
+export function useNostrWebxdcApi(identifier: string): NostrWebxdcApi {
   const { nostr } = useNostr();
   const queryClient = useQueryClient();
   const { user, metadata } = useCurrentUser();
   const { mutate: publish } = useNostrPublish();
+  const { toast } = useToast();
   const updatesQuery = useWebxdcUpdates(identifier);
   const queryKey = useMemo(() => ['webxdc-updates', identifier], [identifier]);
 
@@ -89,7 +105,12 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
 
   useEffect(() => {
     const controller = new AbortController();
-    const since = Math.floor(Date.now() / 1000) - 5;
+    // Events between the last cached query result and this subscription
+    // would be missed by `now - 5`; anchor `since` at the newest cached
+    // event instead (duplicates are deduped by id downstream).
+    const cached = queryClient.getQueryData<NostrEvent[]>(queryKey);
+    const maxCreated = cached?.reduce((max, e) => Math.max(max, e.created_at), 0) ?? 0;
+    const since = maxCreated || Math.floor(Date.now() / 1000) - 5;
 
     (async () => {
       try {
@@ -133,8 +154,15 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
       if (update.document) tags.push(['document', update.document]);
       if (update.summary) tags.push(['summary', update.summary]);
       publish(
-        { kind: WEBXDC_UPDATE_KIND, content: JSON.stringify(update.payload), tags },
+        { kind: WEBXDC_UPDATE_KIND, content: JSON.stringify(update.payload) ?? 'null', tags },
         {
+          onError: () => {
+            toast({
+              title: 'Failed to publish update',
+              description: 'The app could not send its state to relays.',
+              variant: 'destructive',
+            });
+          },
           onSuccess: (event) => {
             queryClient.setQueryData<NostrEvent[]>(queryKey, (old) => {
               if (old?.some((e) => e.id === event.id)) return old;
@@ -144,7 +172,7 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
         },
       );
     },
-    [identifier, publish, queryClient, queryKey],
+    [identifier, publish, queryClient, queryKey, toast],
   );
 
   const setUpdateListener = useCallback(
@@ -189,12 +217,36 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
     };
   }, [identifier, publish]);
 
-  const sendToChat = useCallback(async (): Promise<void> => {
-    throw new Error('sendToChat is not supported');
-  }, []);
-  const importFiles = useCallback(async (): Promise<File[]> => [], []);
+  // sendToChat / importFiles are user-mediated: the runner registers UI
+  // handlers that show a confirmation dialog / file prompt. The hook stays
+  // UI-free and only forwards to the registered handler.
+  const sendToChatHandler = useRef<SendToChatHandler | null>(null);
+  const importFilesHandler = useRef<ImportFilesHandler | null>(null);
 
-  return useMemo<WebxdcAPI<unknown>>(
+  const sendToChat = useCallback(
+    (message: SendOptions): Promise<void> => {
+      if (!user) return Promise.reject(new Error('Log in to share from this app'));
+      const handler = sendToChatHandler.current;
+      if (!handler) return Promise.reject(new Error('sendToChat is not available'));
+      return handler(message);
+    },
+    [user],
+  );
+
+  const importFiles = useCallback((filter: ImportFilesFilter): Promise<File[]> => {
+    const handler = importFilesHandler.current;
+    if (!handler) return Promise.resolve([]);
+    return handler(filter);
+  }, []);
+
+  const setSendToChatHandler = useCallback((fn: SendToChatHandler | null) => {
+    sendToChatHandler.current = fn;
+  }, []);
+  const setImportFilesHandler = useCallback((fn: ImportFilesHandler | null) => {
+    importFilesHandler.current = fn;
+  }, []);
+
+  const api = useMemo<WebxdcAPI<unknown>>(
     () => ({
       selfAddr,
       selfName,
@@ -209,4 +261,6 @@ export function useNostrWebxdcApi(identifier: string): WebxdcAPI<unknown> {
     }),
     [selfAddr, selfName, sendUpdate, setUpdateListener, getAllUpdates, sendToChat, importFiles, joinRealtimeChannel],
   );
+
+  return { api, setSendToChatHandler, setImportFilesHandler };
 }
